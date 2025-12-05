@@ -61,6 +61,13 @@ SIMPLE_JWT={
 }
 # celery
 CELERY_BROKER_URL=os.environ.get('REDIS_URL','redis://redis:6379')+'/0'
+# cache
+CACHES={
+    'default':{
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": os.environ.get('REDIS_URL','redis://redis:6379')+'/1',
+    }
+}
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
