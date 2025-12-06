@@ -1,5 +1,6 @@
 from django.db import models
 import uuid
+from .usermanager import customUserManager
 from django.contrib.auth.models import AbstractUser
 class customUser(AbstractUser):
     id=models.UUIDField(primary_key=True,unique=True,default=uuid.uuid4,editable=False)
@@ -11,3 +12,4 @@ class customUser(AbstractUser):
     updated_at=models.DateTimeField(auto_now_add=True)
     created_at=models.DateTimeField(auto_now=True)
     is_verified=models.BooleanField(default=False)
+    objects=customUserManager()
