@@ -1,5 +1,5 @@
 from rest_framework import status
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view,permission_classes
 from base.utils import success_response,error_response,generate_otp,send_otp_via_sns,generate_username
 from django.core.cache import cache
 from django.contrib.auth import get_user_model
@@ -7,13 +7,15 @@ from rest_framework_simplejwt.tokens import AccessToken,RefreshToken
 from .serializers import UserModelSerializer
 from django.db import transaction, IntegrityError
 from rest_framework_simplejwt.exceptions import InvalidToken,TokenError
-# Create your views here.
+from servers.rider.models import Rider
+from rest_framework.permissions import IsAuthenticated
+
 user_model=get_user_model()
 @api_view(['POST'])
 def request_otp(request):
     phone_number=request.data.get('phone_number',None)
     role=request.data.get('role','rider')
-
+    # print(phone_number)
     if phone_number==None:
         return error_response(code="AUTH_MISSING_DETAILS",message='Phone number is required',field='otp',issue='missing fields',status=status.HTTP_400_BAD_REQUEST)
     otp=generate_otp(6)
@@ -23,7 +25,7 @@ def request_otp(request):
         idx=send_otp_via_sns.delay(phone_number,f"Your OTP for the VahanGo is {otp} will be expired in 10 Minutes") # type: ignore
     except Exception as e:
         return error_response("AUTH_OTP_REQUEST","unable to send OTP","otp","Unable to send OTP",status.HTTP_404_NOT_FOUND)
-    return success_response(data={'otp':otp,'idx':str(idx)},status=status.HTTP_200_OK)
+    return success_response(data={'otp':otp,'idx':str(idx),'message':"OTP sent Successfully"},status=status.HTTP_200_OK)
 @api_view(['POST'])
 def login(request):
     phone_number=request.data.get('phone_number',None)
@@ -51,15 +53,23 @@ def login(request):
             user, created = user_model.objects.get_or_create(phone=phone_number, defaults={
                 "username": generate_username(),
                 "role": role,
-                "is_active": True
+                "is_active": True,
+                
             })
             if created:
+                user.is_verified=True
                 if password:
                     user.set_password(password)
                 else:
                     user.set_unusable_password()
+                
                 user.save()
-    
+                if role=='rider':
+                    rider=Rider.objects.create(user_id=user)
+                    rider.save()
+                elif role=='driver':
+                    pass
+
         
     except IntegrityError:
         user=user_model.objects.get(phone=phone_number)
@@ -77,4 +87,18 @@ def refresh(request):
         return error_response('AUTH_INVALID_TOKEN','TOken is invalid','Authentication','Refresh token is invalid',status.HTTP_400_BAD_REQUEST)
     except TokenError:
         return error_response('AUTH_TOKEN_ERROR','Token Error','Authentication','Token error',status.HTTP_400_BAD_REQUEST)
-    
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def update_user(request):
+    data=request.data
+    user=user_model.objects.get(id=request.user.id)
+    try:
+        user_data=UserModelSerializer(user,data=data,partial=True)
+        if user_data.is_valid():
+            user_data.save()
+            return success_response(user_data.data,status.HTTP_200_OK)
+        else:
+            return error_response('AUTH_INVALID_UPDATE','Not valid Information','Authentication','Invalid details',status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        return error_response('AUTH_UNABLE_UPDATE','Not valid Information','Authentication','Invalid details',status.HTTP_406_NOT_ACCEPTABLE)

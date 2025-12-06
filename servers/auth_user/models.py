@@ -9,7 +9,9 @@ class customUser(AbstractUser):
     phone=models.CharField(max_length=20,unique=True)
     role=models.CharField(choices=[("rider","Rider"),("driver",'Driver'),('admin','Admin')])
     avatar_url=models.CharField(blank=True,null=True)
-    updated_at=models.DateTimeField(auto_now_add=True)
-    created_at=models.DateTimeField(auto_now=True)
+    updated_at=models.DateTimeField(auto_now=True)
+    created_at=models.DateTimeField(auto_now_add=True)
     is_verified=models.BooleanField(default=False)
     objects=customUserManager()
+    def __str__(self) -> str:
+        return self.name
