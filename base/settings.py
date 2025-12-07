@@ -11,7 +11,7 @@ load_dotenv()
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-*5(=ti+p9y=gyu0zkoojz$b55meinl-5w*ibm)3mpkm2ybiohh'
-
+REDIS_URL=os.environ.get('REDIS_URL','redis://redis:6379')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
@@ -31,7 +31,8 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'corsheaders',
     'servers.auth_user',
-    'servers.rider'
+    'servers.rider',
+    'servers.driver'
     
 ]
 MIDDLEWARE = [
@@ -64,13 +65,15 @@ SIMPLE_JWT={
 
 }
 # celery
-CELERY_BROKER_URL=os.environ.get('REDIS_URL','redis://redis:6379')+'/0'
+CELERY_BROKER_URL=REDIS_URL+'/0'
 # cache
 CACHES={
     'default':{
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": os.environ.get('REDIS_URL','redis://redis:6379')+'/1',
-    }
+        "LOCATION": REDIS_URL+'/1',
+        "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"}
+    },
+    
 }
 TEMPLATES = [
     {

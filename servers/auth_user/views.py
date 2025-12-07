@@ -9,7 +9,7 @@ from django.db import transaction, IntegrityError
 from rest_framework_simplejwt.exceptions import InvalidToken,TokenError
 from servers.rider.models import Rider
 from rest_framework.permissions import IsAuthenticated
-
+from servers.driver.models import Driver
 user_model=get_user_model()
 @api_view(['POST'])
 def request_otp(request):
@@ -50,12 +50,7 @@ def login(request):
     cache.delete(f'otp_role_{phone_number}')
     try:
         with transaction.atomic():
-            user, created = user_model.objects.get_or_create(phone=phone_number, defaults={
-                "username": generate_username(),
-                "role": role,
-                "is_active": True,
-                
-            })
+            user, created = user_model.objects.get_or_create(phone=phone_number)
             if created:
                 user.is_verified=True
                 if password:
@@ -68,11 +63,14 @@ def login(request):
                     rider=Rider.objects.create(user_id=user)
                     rider.save()
                 elif role=='driver':
-                    pass
+                    driver_profile=Driver.objects.create(user_id=user)
+                    driver_profile.save()
 
         
-    except IntegrityError:
+    except Exception as e:
+        print(e)
         user=user_model.objects.get(phone=phone_number)
+    
     data=UserModelSerializer(user)
     return success_response(data={'token':str(AccessToken.for_user(user)),'refresh_token':str(RefreshToken.for_user(user)),'user':data.data},status=status.HTTP_200_OK)
 @api_view(['POST'])

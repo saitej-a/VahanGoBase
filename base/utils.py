@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from celery import shared_task
+
 def get_sns_client():
     return boto3.client(
         "sns",
@@ -71,3 +72,4 @@ def generate_username():
     if Users.objects.filter(username=gen_username).exists():
         return generate_username()
     return gen_username
+
