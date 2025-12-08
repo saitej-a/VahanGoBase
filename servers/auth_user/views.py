@@ -1,102 +1,475 @@
+import logging
+import re
 from rest_framework import status
-from rest_framework.decorators import api_view,permission_classes
-from base.utils import success_response,error_response,generate_otp,send_otp_via_sns,generate_username
+from rest_framework.decorators import api_view, permission_classes
+from base.utils import success_response, error_response, generate_otp, send_otp_via_sns, generate_username
 from django.core.cache import cache
 from django.contrib.auth import get_user_model
-from rest_framework_simplejwt.tokens import AccessToken,RefreshToken
+from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 from .serializers import UserModelSerializer
 from django.db import transaction, IntegrityError
-from rest_framework_simplejwt.exceptions import InvalidToken,TokenError
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from servers.rider.models import Rider
 from rest_framework.permissions import IsAuthenticated
 from servers.driver.models import Driver
-user_model=get_user_model()
+
+logger = logging.getLogger(__name__)
+user_model = get_user_model()
+
+# Valid roles for user accounts
+VALID_ROLES = ['rider', 'driver']
+PHONE_REGEX = re.compile(r'^\+?1?\d{9,15}$')
+OTP_EXPIRY = 600  # 10 minutes
+MAX_OTP_ATTEMPTS = 5
+
+
+def _validate_phone_number(phone_number):
+    """
+    Validate phone number format.
+    
+    Args:
+        phone_number: Phone number string
+    
+    Returns:
+        tuple: (is_valid, error_message)
+    """
+    if not phone_number or not isinstance(phone_number, str):
+        return False, "Phone number must be a non-empty string"
+    
+    if not PHONE_REGEX.match(phone_number):
+        return False, "Invalid phone number format. Use E.164 format (e.g., +919876543210)"
+    
+    return True, None
+
+
 @api_view(['POST'])
 def request_otp(request):
-    phone_number=request.data.get('phone_number',None)
-    role=request.data.get('role','rider')
-    # print(phone_number)
-    if phone_number==None:
-        return error_response(code="AUTH_MISSING_DETAILS",message='Phone number is required',field='otp',issue='missing fields',status=status.HTTP_400_BAD_REQUEST)
-    otp=generate_otp(6)
-    # print(otp)
-    cache.set(f'otp_role_{phone_number}',{'otp':otp,'role':role,'attempts':0},600)
+    """
+    Request OTP for authentication.
+    
+    Expected request data:
+    {
+        "phone_number": str (E.164 format, required),
+        "role": str (optional, default: "rider")
+    }
+    """
     try:
-        idx=send_otp_via_sns.delay(phone_number,f"Your OTP for the VahanGo is {otp} will be expired in 10 Minutes") # type: ignore
+        phone_number = request.data.get('phone_number', None)
+        role = request.data.get('role', 'rider')
+        
+        # Validate phone number
+        if phone_number is None:
+            logger.warning("OTP request without phone number")
+            return error_response(
+                code="AUTH_MISSING_DETAILS",
+                message='Phone number is required',
+                field='phone_number',
+                issue='Phone number is mandatory',
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        is_valid, error_msg = _validate_phone_number(phone_number)
+        if not is_valid:
+            logger.warning(f"Invalid phone number format: {phone_number[:5]}***")
+            return error_response(
+                code="AUTH_INVALID_PHONE",
+                message=error_msg,
+                field='phone_number',
+                issue='Invalid phone number format',
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate role
+        if role not in VALID_ROLES:
+            logger.warning(f"Invalid role requested: {role}")
+            return error_response(
+                code="AUTH_INVALID_ROLE",
+                message=f'Role must be one of {VALID_ROLES}',
+                field='role',
+                issue='Invalid role specified',
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Generate OTP
+        otp = generate_otp(6)
+        if not otp:
+            logger.error("Failed to generate OTP")
+            return error_response(
+                code="AUTH_OTP_GENERATION_FAILED",
+                message='Failed to generate OTP',
+                field='otp',
+                issue='OTP generation error',
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        # Store in cache
+        cache.set(
+            f'otp_role_{phone_number}',
+            {'otp': otp, 'role': role, 'attempts': 0},
+            OTP_EXPIRY
+        )
+        
+        try:
+            # Send OTP via SNS (async task)
+            task_id = send_otp_via_sns.delay(
+                phone_number,
+                f"Your OTP for VahanGo is {otp}. It will expire in 10 minutes."
+            )
+            logger.info(f"OTP sent to {phone_number[:5]}***, task_id: {task_id}")
+        except Exception as e:
+            logger.error(f"Failed to queue OTP send task: {str(e)}")
+            return error_response(
+                code="AUTH_OTP_REQUEST",
+                message="Unable to send OTP at this moment",
+                field="otp",
+                issue="SMS gateway error",
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+        
+        # Don't expose OTP in response for security
+        return success_response(
+            data={
+                'message': "OTP sent successfully",
+                'task_id': str(task_id),
+                'otp':otp,
+                'expires_in': OTP_EXPIRY
+            },
+            status_code=status.HTTP_200_OK
+        )
+    
     except Exception as e:
-        return error_response("AUTH_OTP_REQUEST","unable to send OTP","otp","Unable to send OTP",status.HTTP_404_NOT_FOUND)
-    return success_response(data={'otp':otp,'idx':str(idx),'message':"OTP sent Successfully"},status=status.HTTP_200_OK)
+        logger.error(f"Unexpected error in request_otp: {str(e)}")
+        return error_response(
+            code="AUTH_INTERNAL_ERROR",
+            message="An unexpected error occurred",
+            field="general",
+            issue=str(e),
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 @api_view(['POST'])
 def login(request):
-    phone_number=request.data.get('phone_number',None)
-    otp=request.data.get('otp',None)
-    otp_id=request.data.get('otp_id',None)
-    device_token=request.data.get('device_token',None)
-    password=request.data.get('password',None)
-    cache_data=cache.get(f'otp_role_{phone_number}',{})
-    role=cache_data.get('role','rider')
-    sent_otp=cache_data.get('otp',None)
-    attempts=cache_data.get('attempts',0)
-    if sent_otp==None:
-        return error_response('AUTH_INVALID_OTP','OTP Expired','Authentication','OTP Expired',status.HTTP_400_BAD_REQUEST)
-    if phone_number==None:
-        return error_response('AUTH_PHONE_REQUIRED','Phone number required','Authentication','Missing Field',status.HTTP_400_BAD_REQUEST)
-    if attempts>=5:
-        return error_response('AUTH_TOO_MANY',"Too many Attempts",'Authentication','Too many login attempts',status.HTTP_429_TOO_MANY_REQUESTS)
-    if otp!=sent_otp:
-        cache_data['attempts']=attempts+1
-        cache.set(f'otp_role_{phone_number}',cache_data)
-        return error_response("AUTH_INVALID_OTP",'OTP Expired','Authentication',"OTP Incorrect",status.HTTP_400_BAD_REQUEST)
-    cache.delete(f'otp_role_{phone_number}')
-    try:
-        with transaction.atomic():
-            user, created = user_model.objects.get_or_create(phone=phone_number)
-            if created:
-                user.is_verified=True
-                if password:
-                    user.set_password(password)
-                else:
-                    user.set_unusable_password()
-                
-                user.save()
-                if role=='rider':
-                    rider=Rider.objects.create(user_id=user)
-                    rider.save()
-                elif role=='driver':
-                    driver_profile=Driver.objects.create(user_id=user)
-                    driver_profile.save()
-
-        
-    except Exception as e:
-        print(e)
-        user=user_model.objects.get(phone=phone_number)
+    """
+    Authenticate user with OTP.
     
-    data=UserModelSerializer(user)
-    return success_response(data={'token':str(AccessToken.for_user(user)),'refresh_token':str(RefreshToken.for_user(user)),'user':data.data},status=status.HTTP_200_OK)
+    Expected request data:
+    {
+        "phone_number": str (E.164 format, required),
+        "otp": str (required),
+        "device_token": str (optional),
+        "password": str (optional)
+    }
+    """
+    try:
+        # Validate required fields first
+        phone_number = request.data.get('phone_number', None)
+        otp = request.data.get('otp', None)
+        device_token = request.data.get('device_token', None)
+        password = request.data.get('password', None)
+        
+        if phone_number is None:
+            logger.warning("Login attempt without phone number")
+            return error_response(
+                code='AUTH_PHONE_REQUIRED',
+                message='Phone number is required',
+                field='phone_number',
+                issue='Missing required field',
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if otp is None:
+            logger.warning(f"Login attempt without OTP for phone: {phone_number[:5]}***")
+            return error_response(
+                code='AUTH_OTP_REQUIRED',
+                message='OTP is required',
+                field='otp',
+                issue='Missing required field',
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Get OTP data from cache
+        cache_key = f'otp_role_{phone_number}'
+        cache_data = cache.get(cache_key, {})
+        role = cache_data.get('role', 'rider')
+        sent_otp = cache_data.get('otp', None)
+        attempts = cache_data.get('attempts', 0)
+        
+        # Check if OTP has expired
+        if sent_otp is None:
+            logger.warning(f"OTP expired or not found for: {phone_number[:5]}***")
+            return error_response(
+                code='AUTH_OTP_EXPIRED',
+                message='OTP has expired',
+                field='otp',
+                issue='OTP not found or expired',
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Check attempt limit
+        if attempts >= MAX_OTP_ATTEMPTS:
+            logger.warning(f"Too many login attempts for: {phone_number[:5]}***")
+            return error_response(
+                code='AUTH_TOO_MANY_ATTEMPTS',
+                message="Too many failed attempts. Please request a new OTP.",
+                field='otp',
+                issue='Maximum login attempts exceeded',
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+        
+        # Verify OTP
+        if otp != sent_otp:
+            cache_data['attempts'] = attempts + 1
+            cache.set(cache_key, cache_data, OTP_EXPIRY)
+            logger.warning(f"Invalid OTP attempt ({attempts + 1}/{MAX_OTP_ATTEMPTS}) for: {phone_number[:5]}***")
+            return error_response(
+                code="AUTH_INVALID_OTP",
+                message='OTP is incorrect',
+                field='otp',
+                issue='Provided OTP does not match',
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Clear OTP from cache after successful verification
+        cache.delete(cache_key)
+        
+        try:
+            with transaction.atomic():
+                user, created = user_model.objects.get_or_create(phone=phone_number)
+                
+                if created:
+                    # Set up new user
+                    user.is_verified = True
+                    if password:
+                        user.set_password(password)
+                    else:
+                        user.set_unusable_password()
+                    user.save()
+                    logger.info(f"New user created with phone: {phone_number[:5]}***")
+                    
+                    # Create user profile based on role
+                    if role == 'rider':
+                        rider = Rider.objects.create(user_id=user)
+                        rider.save()
+                        logger.info(f"Rider profile created for user: {user.id}")
+                    elif role == 'driver':
+                        driver_profile = Driver.objects.create(user_id=user)
+                        driver_profile.save()
+                        logger.info(f"Driver profile created for user: {user.id}")
+                    else:
+                        logger.error(f"Invalid role during user creation: {role}")
+                        raise ValueError(f"Invalid role: {role}")
+                else:
+                    logger.info(f"Existing user authenticated: {phone_number[:5]}***")
+        
+        except IntegrityError as e:
+            logger.error(f"IntegrityError during login: {str(e)}")
+            return error_response(
+                code='AUTH_PROFILE_ERROR',
+                message='User profile creation failed',
+                field='profile',
+                issue='Database integrity error',
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        except Exception as e:
+            logger.error(f"Error during user creation or profile setup: {str(e)}")
+            # Try to retrieve existing user
+            try:
+                user = user_model.objects.get(phone=phone_number)
+                logger.info(f"Retrieved existing user after error: {phone_number[:5]}***")
+            except user_model.DoesNotExist:
+                logger.error(f"User does not exist after failed creation: {phone_number[:5]}***")
+                return error_response(
+                    code='AUTH_USER_NOT_FOUND',
+                    message='User could not be retrieved',
+                    field='user',
+                    issue='User not found in database',
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+        
+        # Generate tokens
+        try:
+            access_token = AccessToken.for_user(user)
+            refresh_token = RefreshToken.for_user(user)
+        except Exception as e:
+            logger.error(f"Error generating tokens for user {user.id}: {str(e)}")
+            return error_response(
+                code='AUTH_TOKEN_GENERATION_FAILED',
+                message='Failed to generate authentication tokens',
+                field='tokens',
+                issue='Token generation error',
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        # Serialize user data
+        user_serializer = UserModelSerializer(user)
+        
+        logger.info(f"Login successful for: {phone_number[:5]}***")
+        return success_response(
+            data={
+                'token': str(access_token),
+                'refresh_token': str(refresh_token),
+                'user': user_serializer.data
+            },
+            status_code=status.HTTP_200_OK
+        )
+    
+    except Exception as e:
+        logger.error(f"Unexpected error in login: {str(e)}")
+        return error_response(
+            code='AUTH_INTERNAL_ERROR',
+            message='An unexpected error occurred',
+            field='general',
+            issue=str(e),
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 @api_view(['POST'])
 def refresh(request):
-    refresh_token=request.data.get('refresh_token',None)
-    if refresh_token==None:
-        return error_response('AUTH_REFRESH_TOKEN','Refresh token is required','Authentication','Refresh token is missing',status.HTTP_400_BAD_REQUEST)
+    """
+    Refresh access token using refresh token.
+    
+    Expected request data:
+    {
+        "refresh_token": str (required)
+    }
+    """
     try:
-        gen_refresh_token=RefreshToken(refresh_token)
-        return success_response({'token':str(gen_refresh_token.access_token),'refresh_token':gen_refresh_token},status=status.HTTP_200_OK)
-    except InvalidToken:
-        return error_response('AUTH_INVALID_TOKEN','TOken is invalid','Authentication','Refresh token is invalid',status.HTTP_400_BAD_REQUEST)
-    except TokenError:
-        return error_response('AUTH_TOKEN_ERROR','Token Error','Authentication','Token error',status.HTTP_400_BAD_REQUEST)
+        refresh_token = request.data.get('refresh_token', None)
+        
+        if refresh_token is None:
+            logger.warning("Token refresh attempt without refresh token")
+            return error_response(
+                code='AUTH_REFRESH_TOKEN_MISSING',
+                message='Refresh token is required',
+                field='refresh_token',
+                issue='Refresh token not provided',
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            refresh_obj = RefreshToken(refresh_token)
+            new_access_token = str(refresh_obj.access_token)
+            new_refresh_token = str(refresh_obj)
+            
+            logger.info("Token refreshed successfully")
+            return success_response(
+                data={
+                    'token': new_access_token,
+                    'refresh_token': new_refresh_token
+                },
+                status_code=status.HTTP_200_OK
+            )
+        
+        except InvalidToken as e:
+            logger.warning(f"Invalid refresh token: {str(e)}")
+            return error_response(
+                code='AUTH_INVALID_REFRESH_TOKEN',
+                message='Refresh token is invalid',
+                field='refresh_token',
+                issue='The provided refresh token is invalid or malformed',
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except TokenError as e:
+            logger.warning(f"Token error during refresh: {str(e)}")
+            return error_response(
+                code='AUTH_TOKEN_ERROR',
+                message='Token processing error',
+                field='refresh_token',
+                issue='An error occurred while processing the token',
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    
+    except Exception as e:
+        logger.error(f"Unexpected error in refresh: {str(e)}")
+        return error_response(
+            code='AUTH_INTERNAL_ERROR',
+            message='An unexpected error occurred',
+            field='general',
+            issue=str(e),
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
 @api_view(['PATCH'])
 @permission_classes([IsAuthenticated])
 def update_user(request):
-    data=request.data
-    user=user_model.objects.get(id=request.user.id)
+    """
+    Update authenticated user information.
+    
+    Expected request data (any/all fields are optional):
+    {
+        "name": str,
+        "email": str,
+        "avatar_url": str,
+        "phone": str
+    }
+    """
     try:
-        user_data=UserModelSerializer(user,data=data,partial=True)
-        if user_data.is_valid():
-            user_data.save()
-            return success_response(user_data.data,status.HTTP_200_OK)
-        else:
-            return error_response('AUTH_INVALID_UPDATE','Not valid Information','Authentication','Invalid details',status.HTTP_400_BAD_REQUEST)
+        user_id = request.user.id
+        
+        # Retrieve user
+        try:
+            user = user_model.objects.get(id=user_id)
+        except user_model.DoesNotExist:
+            logger.error(f"User not found during update: {user_id}")
+            return error_response(
+                code='AUTH_USER_NOT_FOUND',
+                message='User not found',
+                field='user',
+                issue='The authenticated user does not exist',
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Validate and update user data
+        update_data = request.data
+        
+        if not update_data:
+            logger.warning(f"Update request with no data for user: {user_id}")
+            return error_response(
+                code='AUTH_NO_UPDATE_DATA',
+                message='No update data provided',
+                field='data',
+                issue='Request body is empty',
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            user_serializer = UserModelSerializer(
+                user,
+                data=update_data,
+                partial=True
+            )
+            
+            if user_serializer.is_valid():
+                user_serializer.save()
+                logger.info(f"User profile updated successfully: {user_id}")
+                return success_response(
+                    user_serializer.data,
+                    status.HTTP_200_OK
+                )
+            else:
+                logger.warning(f"Validation errors during user update: {user_serializer.errors}")
+                return error_response(
+                    code='AUTH_VALIDATION_ERROR',
+                    message='Invalid update data',
+                    field='user_data',
+                    issue=str(user_serializer.errors),
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        
+        except Exception as e:
+            logger.error(f"Error during user data update: {str(e)}")
+            return error_response(
+                code='AUTH_UPDATE_ERROR',
+                message='Failed to update user information',
+                field='user_data',
+                issue=str(e),
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    
     except Exception as e:
-        return error_response('AUTH_UNABLE_UPDATE','Not valid Information','Authentication','Invalid details',status.HTTP_406_NOT_ACCEPTABLE)
+        logger.error(f"Unexpected error in update_user: {str(e)}")
+        return error_response(
+            code='AUTH_INTERNAL_ERROR',
+            message='An unexpected error occurred',
+            field='general',
+            issue=str(e),
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )

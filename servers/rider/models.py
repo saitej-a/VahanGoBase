@@ -20,3 +20,9 @@ class FavoriteLocation(models.Model):
     def __str__(self) -> str:
         return f'{self.rider_id.user_id.name}-{self.label}'
 
+class emergencyContacts(models.Model):
+    user_id=models.ForeignKey(Rider,on_delete=models.CASCADE)
+    contact=models.CharField(max_length=20)
+    name=models.CharField(max_length=30)
+    def __str__(self) -> str:
+        return self.name

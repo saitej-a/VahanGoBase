@@ -32,7 +32,8 @@ INSTALLED_APPS = [
     'corsheaders',
     'servers.auth_user',
     'servers.rider',
-    'servers.driver'
+    'servers.driver',
+    'servers.ride'
     
 ]
 MIDDLEWARE = [
@@ -128,6 +129,19 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'DEBUG',
+    },
+}
 
 # Internationalization
 # https://docs.djangoproject.com/en/6.0/topics/i18n/

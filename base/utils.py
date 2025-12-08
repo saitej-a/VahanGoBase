@@ -1,49 +1,153 @@
 import boto3
-from django.utils import timezone
+import logging
 import random
+from typing import Dict, Any, Optional
+from django.utils import timezone
 from rest_framework.response import Response
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from celery import shared_task
+from botocore.exceptions import ClientError, BotoCoreError
+
+logger = logging.getLogger(__name__)
+
+Users = get_user_model()
+
+# Character set for username generation
+CHARACTERS = (
+    [chr(i) for i in range(ord('a'), ord('z') + 1)] +
+    [chr(i) for i in range(ord('A'), ord('Z') + 1)] +
+    list(map(str, range(0, 10)))
+)
+
+MAX_USERNAME_ATTEMPTS = 10
+
 
 def get_sns_client():
-    return boto3.client(
-        "sns",
-        region_name=settings.AWS_REGION,
-        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-    )
-def success_response(data,status):
-    return Response({
-        "status": "success",
-        "data": data,
-        "meta": {
-            "timestamp": timezone.localtime(timezone.now())
-        }
-    },status=status)
+    """
+    Get AWS SNS client with error handling.
+    
+    Returns:
+        boto3 SNS client or None if initialization fails
+    """
+    try:
+        return boto3.client(
+            "sns",
+            region_name=settings.AWS_REGION,
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+        )
+    except Exception as e:
+        logger.error(f"Failed to initialize SNS client: {str(e)}")
+        return None
 
-def error_response(code,message,field,issue,status):
-    return Response({
-        "status": "error",
-        "error": {
-            "code":code,
-            "message":message,
-            "details":{
-                "field":field,
-                "issue":issue
+
+def success_response(data: Any, status_code: int) -> Response:
+    """
+    Generate a standardized success response.
+    
+    Args:
+        data: Response payload
+        status_code: HTTP status code
+    
+    Returns:
+        Response object with success status
+    """
+    return Response(
+        {
+            "status": "success",
+            "data": data,
+            "meta": {
+                "timestamp": timezone.localtime(timezone.now())
             }
-        }
-    },status=status)
+        },
+        status=status_code
+    )
 
-def generate_otp(n):
-    otp=''.join(map(str,random.choices(range(0,10),k=n)))
+
+def error_response(
+    code: str,
+    message: str,
+    field: str,
+    issue: str,
+    status: int
+) -> Response:
+    """
+    Generate a standardized error response.
+    
+    Args:
+        code: Error code identifier
+        message: Human-readable error message
+        field: Field that caused the error
+        issue: Detailed issue description
+        status: HTTP status code
+    
+    Returns:
+        Response object with error status
+    """
+    return Response(
+        {
+            "status": "error",
+            "error": {
+                "code": code or "UNKNOWN_ERROR",
+                "message": message or "An error occurred",
+                "details": {
+                    "field": field or "general",
+                    "issue": issue or "No details available"
+                }
+            }
+        },
+        status=status
+    )
+
+
+def generate_otp(n: int) -> str:
+    """
+    Generate a random OTP of n digits.
+    
+    Args:
+        n: Number of digits for OTP
+    
+    Returns:
+        String of n random digits
+    """
+    if n <= 0:
+        logger.warning(f"Invalid OTP length requested: {n}")
+        return ""
+    
+    otp = ''.join(map(str, random.choices(range(0, 10), k=n)))
     return otp
 
+
 @shared_task
-def send_otp_via_sns(phone_number, message):
+def send_otp_via_sns(phone_number: str, message: str) -> Dict[str, Any]:
+    """
+    Send OTP via AWS SNS service.
     
-    client = get_sns_client()
+    Args:
+        phone_number: Recipient phone number (E.164 format)
+        message: OTP message content
+    
+    Returns:
+        dict: Status and response or error details
+    """
     try:
+        # Validate inputs
+        if not phone_number or not message:
+            logger.warning("Missing phone_number or message")
+            return {
+                "success": False,
+                "error": "Phone number and message are required"
+            }
+        
+        client = get_sns_client()
+        if client is None:
+            logger.error("SNS client initialization failed")
+            return {
+                "success": False,
+                "error": "AWS SNS service unavailable"
+            }
+        
         resp = client.publish(
             PhoneNumber=phone_number,
             Message=message,
@@ -54,22 +158,63 @@ def send_otp_via_sns(phone_number, message):
                 },
                 'AWS.SNS.SMS.SMSType': {
                     'DataType': 'String',
-                    'StringValue': 'Transactional'  # or 'Promotional'
+                    'StringValue': 'Transactional'
                 }
             }
         )
-        return resp  # contains MessageId
+        
+        logger.info(f"OTP sent successfully to {phone_number}")
+        return {
+            "success": True,
+            "message_id": resp.get('MessageId')
+        }
+    
+    except ClientError as e:
+        logger.error(f"AWS ClientError sending OTP: {str(e)}")
+        return {
+            "success": False,
+            "error": f"AWS error: {e.response.get('Error', {}).get('Message', str(e))}"
+        }
+    except BotoCoreError as e:
+        logger.error(f"BotoCoreError sending OTP: {str(e)}")
+        return {
+            "success": False,
+            "error": f"AWS service error: {str(e)}"
+        }
     except Exception as e:
-        return e
-Users=get_user_model()
-import random
-characters=[chr(i) for i in range(ord('a'),ord('z')+1)]
-characters+=[chr(i) for i in range(ord('A'),ord('Z')+1)]
-characters+=list(map(str,range(0,10)))
-def generate_username():
-    gen_username=''.join(random.choices(characters,k=12))
-    print(gen_username)
-    if Users.objects.filter(username=gen_username).exists():
-        return generate_username()
-    return gen_username
+        logger.error(f"Unexpected error sending OTP via SNS: {str(e)}")
+        return {
+            "success": False,
+            "error": f"Unexpected error: {str(e)}"
+        }
+
+
+def generate_username(attempt: int = 0) -> Optional[str]:
+    """
+    Generate a unique username.
+    
+    Args:
+        attempt: Current attempt number (used to prevent infinite recursion)
+    
+    Returns:
+        Generated unique username or None if max attempts exceeded
+    """
+    if attempt >= MAX_USERNAME_ATTEMPTS:
+        logger.error(f"Failed to generate unique username after {MAX_USERNAME_ATTEMPTS} attempts")
+        return None
+    
+    try:
+        gen_username = ''.join(random.choices(CHARACTERS, k=12))
+        
+        # Check if username already exists
+        if Users.objects.filter(username=gen_username).exists():
+            logger.debug(f"Username {gen_username} already exists, retrying")
+            return generate_username(attempt + 1)
+        
+        logger.info(f"Generated new username: {gen_username}")
+        return gen_username
+    
+    except Exception as e:
+        logger.error(f"Error generating username: {str(e)}")
+        return None
 
