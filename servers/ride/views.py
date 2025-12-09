@@ -5,16 +5,16 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import api_view,permission_classes
 from servers.ride.models import Ride
 from django.db import transaction
-from .utils import get_estimated_amount
+from .utils import estimate_amount
 # Create your views here.
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def ride_request(request):
-    src_lat=request.data.get('src_lat')
-    src_lng=request.data.get('src_lng')
-    dest_lat=request.data.get('dest_lat')
-    dest_lng=request.data.get('dest_lng')
-    is_shared=request.data.get('is_shared')
+    src_lat: float=request.data.get('src_lat')
+    src_lng:float=request.data.get('src_lng')
+    dest_lat:float=request.data.get('dest_lat')
+    dest_lng:float=request.data.get('dest_lng')
+    is_shared=request.data.get('is_shared',False)
     # implemented from here
     if not (src_lat or src_lng):
         return error_response()
