@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VahanGo — WebSocket Tester</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0f1117;
+            --surface: #1a1d27;
+            --surface2: #232733;
+            --border: #2e3345;
+            --text: #e4e6f0;
+            --text-dim: #8b8fa3;
+            --accent: #6c5ce7;
+            --accent-glow: rgba(108, 92, 231, 0.25);
+            --green: #00b894;
+            --green-glow: rgba(0, 184, 148, 0.2);
+            --red: #e74c3c;
+            --red-glow: rgba(231, 76, 60, 0.2);
+            --orange: #f39c12;
+            --blue: #0984e3;
+            --radius: 12px;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 24px;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 1.8rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+            background: linear-gradient(135deg, var(--accent), #a29bfe);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: var(--text-dim);
+            margin-bottom: 28px;
+            font-size: 0.9rem;
+        }
+
+        /* Token bar */
+        .token-bar {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 16px 20px;
+            margin-bottom: 24px;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .token-bar label {
+            font-weight: 600;
+            font-size: 0.85rem;
+            white-space: nowrap;
+            color: var(--accent);
+        }
+
+        .token-bar input {
+            flex: 1;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px 14px;
+            color: var(--text);
+            font-family: 'Inter', monospace;
+            font-size: 0.82rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .token-bar input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+
+        /* Grid */
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+            gap: 20px;
+        }
+
+        /* Cards */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .card-header h2 {
+            font-size: 1rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .card-header h2 .icon {
+            font-size: 1.1rem;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--red);
+            box-shadow: 0 0 6px var(--red-glow);
+            transition: all 0.3s;
+        }
+
+        .status-dot.connected {
+            background: var(--green);
+            box-shadow: 0 0 8px var(--green-glow);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 6px var(--green-glow); }
+            50% { box-shadow: 0 0 14px var(--green-glow); }
+        }
+
+        .card-body {
+            padding: 16px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .input-row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            flex: 1;
+            min-width: 100px;
+        }
+
+        .input-group label {
+            font-size: 0.72rem;
+            font-weight: 500;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .input-group input {
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px 12px;
+            color: var(--text);
+            font-size: 0.85rem;
+            font-family: 'Inter', sans-serif;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .input-group input:focus {
+            border-color: var(--accent);
+        }
+
+        .btn-row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            padding: 9px 18px;
+            border-radius: 8px;
+            border: none;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.82rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-connect {
+            background: var(--green);
+            color: #fff;
+        }
+        .btn-connect:hover { filter: brightness(1.1); transform: translateY(-1px); }
+
+        .btn-disconnect {
+            background: var(--red);
+            color: #fff;
+        }
+        .btn-disconnect:hover { filter: brightness(1.1); }
+
+        .btn-send {
+            background: var(--accent);
+            color: #fff;
+        }
+        .btn-send:hover { filter: brightness(1.15); transform: translateY(-1px); }
+
+        .btn-action {
+            background: var(--surface2);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+        .btn-action:hover { background: var(--border); }
+
+        .btn-action.accept { border-color: var(--green); color: var(--green); }
+        .btn-action.start { border-color: var(--blue); color: var(--blue); }
+        .btn-action.complete { border-color: var(--accent); color: var(--accent); }
+        .btn-action.cancel { border-color: var(--red); color: var(--red); }
+
+        /* Log */
+        .log {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px;
+            height: 200px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.78rem;
+            line-height: 1.6;
+        }
+
+        .log::-webkit-scrollbar { width: 6px; }
+        .log::-webkit-scrollbar-track { background: transparent; }
+        .log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+        .log-entry { margin-bottom: 2px; }
+        .log-entry.sent { color: var(--blue); }
+        .log-entry.received { color: var(--green); }
+        .log-entry.error { color: var(--red); }
+        .log-entry.info { color: var(--orange); }
+        .log-entry .time { color: var(--text-dim); margin-right: 6px; }
+
+        .ws-url {
+            font-family: 'Courier New', monospace;
+            font-size: 0.72rem;
+            color: var(--text-dim);
+            padding: 6px 10px;
+            background: var(--bg);
+            border-radius: 6px;
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+
+<h1>🛺 VahanGo WebSocket Tester</h1>
+<p class="subtitle">Test driver location, ride requests, and trip status in real-time</p>
+
+<div class="token-bar">
+    <label>🔑 JWT Token</label>
+    <input type="text" id="jwtToken" placeholder="Paste your JWT access token here...">
+</div>
+
+<div class="grid">
+
+    <!-- Driver Location -->
+    <div class="card">
+        <div class="card-header">
+            <h2><span class="icon">📍</span> Driver Location</h2>
+            <div class="status-dot" id="driverLocStatus"></div>
+        </div>
+        <div class="card-body">
+            <div class="ws-url" id="driverLocUrl">ws://localhost:8000/ws/driver/location/?token=...</div>
+            <div class="input-row">
+                <div class="input-group">
+                    <label>Longitude</label>
+                    <input type="number" step="any" id="driverLng" value="78.4867">
+                </div>
+                <div class="input-group">
+                    <label>Latitude</label>
+                    <input type="number" step="any" id="driverLat" value="17.3850">
+                </div>
+            </div>
+            <div class="btn-row">
+                <button class="btn-connect" onclick="connectDriverLoc()">Connect</button>
+                <button class="btn-disconnect" onclick="disconnectDriverLoc()">Disconnect</button>
+                <button class="btn-send" onclick="sendDriverLoc()">Send Location</button>
+            </div>
+            <div class="log" id="driverLocLog"></div>
+        </div>
+    </div>
+
+    <!-- Ride Request -->
+    <div class="card">
+        <div class="card-header">
+            <h2><span class="icon">🚗</span> Ride Request</h2>
+            <div class="status-dot" id="rideReqStatus"></div>
+        </div>
+        <div class="card-body">
+            <div class="ws-url" id="rideReqUrl">ws://localhost:8000/ws/ride/request/?token=...</div>
+            <div class="input-row">
+                <div class="input-group">
+                    <label>Pickup Lat</label>
+                    <input type="number" step="any" id="pickupLat" value="17.385">
+                </div>
+                <div class="input-group">
+                    <label>Pickup Lng</label>
+                    <input type="number" step="any" id="pickupLng" value="78.486">
+                </div>
+            </div>
+            <div class="input-row">
+                <div class="input-group">
+                    <label>Dest Lat</label>
+                    <input type="number" step="any" id="destLat" value="17.440">
+                </div>
+                <div class="input-group">
+                    <label>Dest Lng</label>
+                    <input type="number" step="any" id="destLng" value="78.348">
+                </div>
+            </div>
+            <div class="input-row">
+                <div class="input-group">
+                    <label>Pickup Address</label>
+                    <input type="text" id="pickupAddr" value="Hitech City">
+                </div>
+                <div class="input-group">
+                    <label>Dest Address</label>
+                    <input type="text" id="destAddr" value="Gachibowli">
+                </div>
+            </div>
+            <div class="btn-row">
+                <button class="btn-connect" onclick="connectRideReq()">Connect</button>
+                <button class="btn-disconnect" onclick="disconnectRideReq()">Disconnect</button>
+                <button class="btn-send" onclick="sendRideReq()">Request Ride</button>
+            </div>
+            <div class="log" id="rideReqLog"></div>
+        </div>
+    </div>
+
+    <!-- Trip Status -->
+    <div class="card">
+        <div class="card-header">
+            <h2><span class="icon">🔄</span> Trip Status</h2>
+            <div class="status-dot" id="tripStatus"></div>
+        </div>
+        <div class="card-body">
+            <div class="ws-url" id="tripStatusUrl">ws://localhost:8000/ws/ride/trip/&lt;id&gt;/?token=...</div>
+            <div class="input-row">
+                <div class="input-group">
+                    <label>Trip ID</label>
+                    <input type="number" id="tripId" value="1">
+                </div>
+            </div>
+            <div class="btn-row">
+                <button class="btn-connect" onclick="connectTripStatus()">Connect</button>
+                <button class="btn-disconnect" onclick="disconnectTripStatus()">Disconnect</button>
+            </div>
+            <div class="btn-row">
+                <button class="btn-action accept" onclick="sendTripAction('accept')">✓ Accept</button>
+                <button class="btn-action start" onclick="sendTripAction('start')">▶ Start</button>
+                <button class="btn-action complete" onclick="sendTripAction('complete')">✔ Complete</button>
+                <button class="btn-action cancel" onclick="sendTripAction('cancel')">✕ Cancel</button>
+            </div>
+            <div class="log" id="tripStatusLog"></div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+    let driverLocWs = null;
+    let rideReqWs = null;
+    let tripStatusWs = null;
+
+    function getToken() {
+        return document.getElementById('jwtToken').value.trim();
+    }
+
+    function timestamp() {
+        return new Date().toLocaleTimeString('en-US', { hour12: false });
+    }
+
+    function addLog(logId, message, type = 'info') {
+        const log = document.getElementById(logId);
+        const entry = document.createElement('div');
+        entry.className = `log-entry ${type}`;
+        entry.innerHTML = `<span class="time">[${timestamp()}]</span>${message}`;
+        log.appendChild(entry);
+        log.scrollTop = log.scrollHeight;
+    }
+
+    function setStatus(dotId, connected) {
+        document.getElementById(dotId).classList.toggle('connected', connected);
+    }
+
+    function createWs(url, logId, statusDotId) {
+        const token = getToken();
+        if (!token) {
+            addLog(logId, '⚠ Paste a JWT token first!', 'error');
+            return null;
+        }
+        const fullUrl = `${url}?token=${token}`;
+        addLog(logId, `Connecting to ${url}...`, 'info');
+
+        const ws = new WebSocket(fullUrl);
+
+        ws.onopen = () => {
+            setStatus(statusDotId, true);
+            addLog(logId, 'Connected ✓', 'received');
+        };
+        ws.onclose = (e) => {
+            setStatus(statusDotId, false);
+            addLog(logId, `Disconnected (code: ${e.code})`, 'error');
+        };
+        ws.onerror = () => {
+            addLog(logId, 'Connection error', 'error');
+        };
+        ws.onmessage = (e) => {
+            const data = JSON.parse(e.data);
+            addLog(logId, `← ${JSON.stringify(data, null, 0)}`, 'received');
+        };
+
+        return ws;
+    }
+
+    // -- Driver Location --
+    function connectDriverLoc() {
+        if (driverLocWs) driverLocWs.close();
+        driverLocWs = createWs('ws://localhost:8000/ws/driver/location/', 'driverLocLog', 'driverLocStatus');
+    }
+    function disconnectDriverLoc() {
+        if (driverLocWs) { driverLocWs.close(); driverLocWs = null; }
+    }
+    function sendDriverLoc() {
+        if (!driverLocWs || driverLocWs.readyState !== WebSocket.OPEN) {
+            addLog('driverLocLog', '⚠ Not connected', 'error'); return;
+        }
+        const payload = {
+            lng: parseFloat(document.getElementById('driverLng').value),
+            lat: parseFloat(document.getElementById('driverLat').value),
+        };
+        driverLocWs.send(JSON.stringify(payload));
+        addLog('driverLocLog', `→ ${JSON.stringify(payload)}`, 'sent');
+    }
+
+    // -- Ride Request --
+    function connectRideReq() {
+        if (rideReqWs) rideReqWs.close();
+        rideReqWs = createWs('ws://localhost:8000/ws/ride/request/', 'rideReqLog', 'rideReqStatus');
+    }
+    function disconnectRideReq() {
+        if (rideReqWs) { rideReqWs.close(); rideReqWs = null; }
+    }
+    function sendRideReq() {
+        if (!rideReqWs || rideReqWs.readyState !== WebSocket.OPEN) {
+            addLog('rideReqLog', '⚠ Not connected', 'error'); return;
+        }
+        const payload = {
+            pickup_lat: parseFloat(document.getElementById('pickupLat').value),
+            pickup_lng: parseFloat(document.getElementById('pickupLng').value),
+            destination_lat: parseFloat(document.getElementById('destLat').value),
+            destination_lng: parseFloat(document.getElementById('destLng').value),
+            pickup_address: document.getElementById('pickupAddr').value,
+            destination_address: document.getElementById('destAddr').value,
+        };
+        rideReqWs.send(JSON.stringify(payload));
+        addLog('rideReqLog', `→ ${JSON.stringify(payload)}`, 'sent');
+    }
+
+    // -- Trip Status --
+    function connectTripStatus() {
+        if (tripStatusWs) tripStatusWs.close();
+        const tripId = document.getElementById('tripId').value;
+        tripStatusWs = createWs(`ws://localhost:8000/ws/ride/trip/${tripId}/`, 'tripStatusLog', 'tripStatus');
+    }
+    function disconnectTripStatus() {
+        if (tripStatusWs) { tripStatusWs.close(); tripStatusWs = null; }
+    }
+    function sendTripAction(action) {
+        if (!tripStatusWs || tripStatusWs.readyState !== WebSocket.OPEN) {
+            addLog('tripStatusLog', '⚠ Not connected', 'error'); return;
+        }
+        const payload = { action };
+        tripStatusWs.send(JSON.stringify(payload));
+        addLog('tripStatusLog', `→ ${JSON.stringify(payload)}`, 'sent');
+    }
+</script>
+
+</body>
+</html>

@@ -3,5 +3,12 @@ from django.contrib.auth import get_user_model
 
 class UserModelSerializer(ModelSerializer):
     class Meta:
-        model=get_user_model()
-        fields=['id','username','email','name','phone','role','avatar_url','updated_at','created_at','is_verified']
+        model = get_user_model()
+        fields = [
+            'id', 'username', 'full_name', 'phone_number', 'email', 
+            'gender', 'dob', 'house_no', 'street', 'city', 'zip_code',
+            'emergency_contact', 'role', 'avatar', 'updated_at', 'created_at'
+        ]
+        extra_kwargs = {
+            'password': {'write_only': True}
+        }

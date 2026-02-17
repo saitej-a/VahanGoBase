@@ -1,27 +1,38 @@
-import requests as re
-import os
 import logging
-logger=logging.getLogger(__name__)
-GMAPS_API=os.environ.get('GMAPS_API')
-GMAPS_URL:str=os.environ.get('GMAPS_DISTANCE_MATRIX_URL','')
-SESSION=re.session()
 
-def get_dist_duration(src_lat,src_lng,dest_lat,dest_lng):
-    result=SESSION.get(GMAPS_URL,params={
-        'destinations':f'{dest_lng},{dest_lat}',
-        'origins':f'{src_lng},{src_lat}',
-        'key':GMAPS_API
-    })
-    result_respose=result.json()
+logger = logging.getLogger(__name__)
+
+# Base fare constants (can be moved to DB via VehicleFarePricing later)
+BASE_FARE = 30.00        # Base fare in INR
+PER_KM_FARE = 12.00      # Per kilometer fare
+PER_MIN_FARE = 2.00       # Per minute fare
+MIN_FARE = 50.00          # Minimum fare
+
+
+def estimate_amount(distance_km, duration_min):
+    """
+    Estimate the fare for a trip based on distance and duration.
+    
+    Args:
+        distance_km: Estimated distance in kilometers
+        duration_min: Estimated duration in minutes
+    
+    Returns:
+        Decimal: Estimated fare amount
+    
+    Note:
+        This is a placeholder implementation. In production, integrate
+        with a routing API (Google Maps, OSRM) to get actual distance
+        and duration, and use VehicleFarePricing from the database.
+    """
     try:
-        row=result_respose.get('rows')[0]
-        ele=row.get('elements')[0]
-        dist=ele.get('distance').get('value')
-        duration=ele.get('duration').get('value')
-        return dist,duration
+        distance_km = max(float(distance_km), 0)
+        duration_min = max(float(duration_min), 0)
 
-    except Exception as e:
-        logger.error('Unexpected error occured '+str(e))
-        return 0,0
-def estimate_amount(dist,dur,base_fare=20,type_of='auto'):
-    pass
+        fare = BASE_FARE + (distance_km * PER_KM_FARE) + (duration_min * PER_MIN_FARE)
+        fare = max(fare, MIN_FARE)
+
+        return round(fare, 2)
+    except (ValueError, TypeError) as e:
+        logger.warning(f"Error estimating fare: {str(e)}, returning minimum fare")
+        return MIN_FARE

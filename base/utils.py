@@ -20,7 +20,6 @@ CHARACTERS = (
     list(map(str, range(0, 10)))
 )
 
-MAX_USERNAME_ATTEMPTS = 10
 
 
 def get_sns_client():
@@ -187,34 +186,4 @@ def send_otp_via_sns(phone_number: str, message: str) -> Dict[str, Any]:
             "success": False,
             "error": f"Unexpected error: {str(e)}"
         }
-
-
-def generate_username(attempt: int = 0) -> Optional[str]:
-    """
-    Generate a unique username.
-    
-    Args:
-        attempt: Current attempt number (used to prevent infinite recursion)
-    
-    Returns:
-        Generated unique username or None if max attempts exceeded
-    """
-    if attempt >= MAX_USERNAME_ATTEMPTS:
-        logger.error(f"Failed to generate unique username after {MAX_USERNAME_ATTEMPTS} attempts")
-        return None
-    
-    try:
-        gen_username = ''.join(random.choices(CHARACTERS, k=12))
-        
-        # Check if username already exists
-        if Users.objects.filter(username=gen_username).exists():
-            logger.debug(f"Username {gen_username} already exists, retrying")
-            return generate_username(attempt + 1)
-        
-        logger.info(f"Generated new username: {gen_username}")
-        return gen_username
-    
-    except Exception as e:
-        logger.error(f"Error generating username: {str(e)}")
-        return None
 

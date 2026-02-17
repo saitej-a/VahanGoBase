@@ -1,6 +1,6 @@
 from rest_framework.serializers import ModelSerializer
-from .models import FavoriteLocation
-class FavoriteLocationSerializer(ModelSerializer):
+from .models import FavoritePlace
+class FavoritePlaceSerializer(ModelSerializer):
     class Meta:
-        model=FavoriteLocation
+        model=FavoritePlace
         fields='__all__'

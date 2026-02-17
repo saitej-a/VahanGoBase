@@ -2,7 +2,7 @@ import logging
 import re
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from base.utils import success_response, error_response, generate_otp, send_otp_via_sns, generate_username
+from base.utils import success_response, error_response, generate_otp, send_otp_via_sns
 from django.core.cache import cache
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
@@ -233,11 +233,10 @@ def login(request):
         
         try:
             with transaction.atomic():
-                user, created = user_model.objects.get_or_create(phone=phone_number)
+                user, created = user_model.objects.get_or_create(phone_number=phone_number,role=role)
                 
                 if created:
                     # Set up new user
-                    user.is_verified = True
                     if password:
                         user.set_password(password)
                     else:
@@ -273,7 +272,7 @@ def login(request):
             logger.error(f"Error during user creation or profile setup: {str(e)}")
             # Try to retrieve existing user
             try:
-                user = user_model.objects.get(phone=phone_number)
+                user = user_model.objects.get(phone_number=phone_number)
                 logger.info(f"Retrieved existing user after error: {phone_number[:5]}***")
             except user_model.DoesNotExist:
                 logger.error(f"User does not exist after failed creation: {phone_number[:5]}***")
@@ -395,10 +394,17 @@ def update_user(request):
     
     Expected request data (any/all fields are optional):
     {
-        "name": str,
+        "full_name": str,
         "email": str,
-        "avatar_url": str,
-        "phone": str
+        "gender": str,
+        "dob": str (YYYY-MM-DD),
+        "house_no": str,
+        "street": str,
+        "city": str,
+        "zip_code": str,
+        "emergency_contact": str,
+        "avatar": str,
+        "phone_number": str
     }
     """
     try:

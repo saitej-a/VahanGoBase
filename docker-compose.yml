@@ -1,5 +1,9 @@
-version: '1'
 services:
+  redis:
+    image: redis
+    ports:
+      - "6379:6379"
+
   django:
     build:
       context: .
@@ -8,19 +12,17 @@ services:
       - "8000:8000"
     volumes:
       - .:/App
-    command: ["python", "manage.py","runserver", "0.0.0.0:8000"]
+    command: ["daphne", "-b", "0.0.0.0", "-p", "8000", "base.asgi:application"]
     depends_on:
-      - celery
+      - redis
+
   celery:
     build:
       context: .
       dockerfile: dockerfile
-    command: ["celery", "-A","base","worker","-l","INFO"]
+    command: ["celery", "-A", "base", "worker", "-l", "INFO"]
+    volumes:
+      - .:/App
     depends_on:
       - redis
-  redis:
-    image: redis
-    ports:
-      - "6379:6379"
-    # command: ["redis","-port","6379"]
-    
+      - django

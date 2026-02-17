@@ -3,9 +3,9 @@ import logging
 from rest_framework import status
 from base.utils import success_response, error_response
 from rest_framework.decorators import api_view, permission_classes
-from .serializers import FavoriteLocationSerializer
+from .serializers import FavoritePlaceSerializer
 from rest_framework.permissions import IsAuthenticated
-from .models import FavoriteLocation
+from .models import FavoritePlace
 from ..redis import nearby_drivers
 
 logger = logging.getLogger(__name__)
@@ -15,20 +15,19 @@ logger = logging.getLogger(__name__)
 @permission_classes([IsAuthenticated])
 def save_favorite_locations(request):
     """
-    Save a favorite location for the rider.
+    Save a favorite location for the user.
     
     Expected request data:
     {
-        "name": str,
-        "address": str,
-        "lng": float,
-        "lat": float
+        "address_text": str,
+        "latitude": float,
+        "longitude": float
     }
     """
     try:
         data = copy.copy(request.data)
-        data['rider_id'] = request.user.rider.id
-        instance = FavoriteLocationSerializer(data=data)
+        data['user_id'] = request.user.id
+        instance = FavoritePlaceSerializer(data=data)
         
         if instance.is_valid():
             instance.save()
@@ -46,12 +45,12 @@ def save_favorite_locations(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
     except AttributeError as e:
-        logger.error(f"Rider profile error: {str(e)}")
+        logger.error(f"Profile error: {str(e)}")
         return error_response(
             code='PROFILE_ERROR',
-            message='Rider profile not found',
+            message='User profile not found',
             field='user',
-            issue='User does not have a rider profile',
+            issue='User profile issue',
             status=status.HTTP_400_BAD_REQUEST
         )
     except Exception as e:
@@ -69,19 +68,19 @@ def save_favorite_locations(request):
 @permission_classes([IsAuthenticated])
 def get_favorite_locations(request):
     """
-    Retrieve all favorite locations for the authenticated rider.
+    Retrieve all favorite locations for the authenticated user.
     """
     try:
-        query_set = FavoriteLocation.objects.filter(rider_id=request.user.rider.id)
-        data = FavoriteLocationSerializer(query_set, many=True)
+        query_set = FavoritePlace.objects.filter(user_id=request.user.id)
+        data = FavoritePlaceSerializer(query_set, many=True)
         return success_response(data.data, status.HTTP_200_OK)
     except AttributeError as e:
-        logger.error(f"Rider profile error: {str(e)}")
+        logger.error(f"Profile error: {str(e)}")
         return error_response(
             code='PROFILE_ERROR',
-            message='Rider profile not found',
+            message='User profile not found',
             field='user',
-            issue='User does not have a rider profile',
+            issue='User profile issue',
             status=status.HTTP_400_BAD_REQUEST
         )
     except Exception as e:

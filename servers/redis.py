@@ -1,7 +1,7 @@
 import redis
 import logging
 from django.conf import settings
-
+from servers.driver.utils import update_driver_location
 logger = logging.getLogger(__name__)
 
 # Initialize Redis client with connection pool and error handling
@@ -15,7 +15,7 @@ try:
     )
     # Test the connection
     redis_client.ping()
-    logger.info("Redis connection established successfully")
+    logger.info("Geo connection established successfully")
 except (redis.ConnectionError, redis.TimeoutError, Exception) as e:
     logger.error(f"Failed to connect to Redis: {str(e)}")
     redis_client = None
@@ -77,8 +77,15 @@ def add_driver_location(driver_id, lng, lat):
         if not is_valid:
             raise ValueError(error_msg)
         
+        lng = float(lng)
+        lat = float(lat)
+        
         member = f'driver:{driver_id}'
-        result = redis_client.geoadd(GEO_KEY, [(lng, lat, member)])
+        result = redis_client.geoadd(GEO_KEY, [lng, lat, member])
+        
+        
+        res = update_driver_location(driver_id=driver_id, lat=lat, lng=lng)
+        print(res)
         
         if result is not None:
             logger.info(f"Driver {driver_id} location updated: lng={lng}, lat={lat}")
@@ -190,4 +197,52 @@ def remove_driver(driver_id):
         return {"success": False, "error": "Database operation failed"}
     except Exception as e:
         logger.error(f"Unexpected error removing driver {driver_id}: {str(e)}")
+        return {"success": False, "error": "An unexpected error occurred"}
+
+
+def publish_ride_request(ride_id, rider_id, pickup_lng, pickup_lat, destination_lng, destination_lat):
+    """
+    Publish a ride request to Redis Stream for future analytics.
+    
+    NOTE: This stream is NOT used for driver notification — drivers are
+    notified in real-time via WebSockets (channel_layer.group_send).
+    This serves as a write-only log for future use cases such as:
+      - Ride request history & audit trail
+      - Demand heatmaps & surge pricing analytics
+      - Request pattern analysis
+    
+    Args:
+        ride_id: Trip/ride ID
+        rider_id: Rider's user ID
+        pickup_lng: Pickup longitude
+        pickup_lat: Pickup latitude
+        destination_lng: Destination longitude
+        destination_lat: Destination latitude
+    
+    Returns:
+        dict: Status and message
+    """
+    if redis_client is None:
+        logger.error("Redis client not available for publishing ride request")
+        return {"success": False, "error": "Redis connection unavailable"}
+
+    try:
+        message_id = redis_client.xadd('ride_requests', {
+            'ride_id': str(ride_id),
+            'rider_id': str(rider_id),
+            'pickup_lng': str(pickup_lng),
+            'pickup_lat': str(pickup_lat),
+            'destination_lng': str(destination_lng),
+            'destination_lat': str(destination_lat),
+            'status': 'pending',
+        }, maxlen=50000)
+
+        logger.info(f"Ride request {ride_id} published to stream: {message_id}")
+        return {"success": True, "message_id": message_id}
+
+    except redis.RedisError as e:
+        logger.error(f"Redis error publishing ride request {ride_id}: {str(e)}")
+        return {"success": False, "error": "Failed to publish ride request"}
+    except Exception as e:
+        logger.error(f"Unexpected error publishing ride request {ride_id}: {str(e)}")
         return {"success": False, "error": "An unexpected error occurred"}

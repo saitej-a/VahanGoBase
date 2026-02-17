@@ -21,6 +21,7 @@ ALLOWED_HOSTS = ['*']
 # Application definition
 
 INSTALLED_APPS = [
+    'daphne',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -30,10 +31,13 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt',
     'corsheaders',
+    'channels',
     'servers.auth_user',
     'servers.rider',
     'servers.driver',
-    'servers.ride'
+    'servers.ride',
+    'servers.payments',
+    # 'servers.support',
     
 ]
 MIDDLEWARE = [
@@ -97,7 +101,18 @@ AWS_ACCESS_KEY_ID=os.environ.get("AWS_ACCESS_KEY_ID")
 AWS_REGION=os.environ.get("AWS_REGION")
 AWS_SNS_SENDER_ID=os.environ.get("AWS_SNS_SENDER_ID")
 
-WSGI_APPLICATION = 'base.wsgi.application'
+# WSGI_APPLICATION = 'base.wsgi.application'
+ASGI_APPLICATION = 'base.asgi.application'
+
+# Django Channels - Redis Channel Layer
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            'hosts': [REDIS_URL + '/4'],
+        },
+    },
+}
 
 
 # Database
@@ -160,3 +175,5 @@ AUTH_USER_MODEL='auth_user.customUser'
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
