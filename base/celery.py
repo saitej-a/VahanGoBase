@@ -5,3 +5,4 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE','base.settings')
 app=Celery('base')
 
 app.config_from_object(settings,namespace='CELERY')
+app.autodiscover_tasks()

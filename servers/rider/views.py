@@ -164,3 +164,55 @@ def get_nearby_drivers(request):
             issue=str(e),
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+
+# ── Notifications ────────────────────────────────────────
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def list_notifications(request):
+    """
+    List notifications for the user.
+    """
+    from .models import Notification
+    from .serializers import NotificationSerializer
+    from rest_framework.pagination import PageNumberPagination
+
+    notifs = Notification.objects.filter(user_id=request.user).order_by('-id')
+    
+    paginator = PageNumberPagination()
+    paginator.page_size = 20
+    result_page = paginator.paginate_queryset(notifs, request)
+    serializer = NotificationSerializer(result_page, many=True)
+    return paginator.get_paginated_response(serializer.data)
+
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def mark_notification_read(request, notif_id):
+    """Mark a specific notification as read."""
+    from .models import Notification
+    
+    try:
+        notif = Notification.objects.get(id=notif_id, user_id=request.user)
+        notif.is_read = True
+        notif.save()
+        return success_response({'message': 'Marked as read'}, status.HTTP_200_OK)
+    except Notification.DoesNotExist:
+        return error_response(
+            code='NOT_FOUND',
+            message='Notification not found',
+            field='notif_id',
+            issue=f'Notification {notif_id} not found',
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def mark_all_notifications_read(request):
+    """Mark all notifications for the user as read."""
+    from .models import Notification
+    
+    Notification.objects.filter(user_id=request.user, is_read=False).update(is_read=True)
+    return success_response({'message': 'All notifications marked as read'}, status.HTTP_200_OK)

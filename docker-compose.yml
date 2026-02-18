@@ -1,28 +1,35 @@
 services:
   redis:
-    image: redis
+    image: redis:7-alpine
     ports:
       - "6379:6379"
+    
 
   django:
     build:
       context: .
-      dockerfile: dockerfile
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     volumes:
       - .:/App
-    command: ["daphne", "-b", "0.0.0.0", "-p", "8000", "base.asgi:application"]
+    env_file:
+      - .env
+    command: >
+      sh -c "python manage.py collectstatic --noinput &&
+             python manage.py migrate --noinput &&
+             daphne -b 0.0.0.0 -p 8000 base.asgi:application"
     depends_on:
       - redis
 
   celery:
     build:
       context: .
-      dockerfile: dockerfile
+      dockerfile: Dockerfile
     command: ["celery", "-A", "base", "worker", "-l", "INFO"]
     volumes:
       - .:/App
+    env_file:
+      - .env
     depends_on:
-      - redis
       - django

@@ -50,7 +50,7 @@ graph TB
 
 | Layer | Technology |
 |---|---|
-| Framework | Django 6.0 + Django REST Framework |
+| Framework | Django 5.0.3 + Django REST Framework |
 | ASGI Server | Daphne |
 | WebSockets | Django Channels |
 | Cache / Geo / Streams | Redis (3 databases: cache, geo, streams) |
@@ -125,36 +125,79 @@ graph TB
 
 ---
 
-### 4. `ride` — Trips, Fares & Ratings
+### 4. `ride` — Trips, Fares, Ratings & History
 
 | File | Lines | Description |
 |---|---|---|
 | [models.py](file:///c:/Users/ankam/OneDrive/Desktop/Backend/VahanGoBase/servers/ride/models.py) | 66 | 5 models |
-| [views.py](file:///c:/Users/ankam/OneDrive/Desktop/Backend/VahanGoBase/servers/ride/views.py) | 118 | Ride request REST endpoint |
-| [utils.py](file:///c:/Users/ankam/OneDrive/Desktop/Backend/VahanGoBase/servers/ride/utils.py) | 39 | Fare estimation logic |
+| [views.py](file:///c:/Users/ankam/OneDrive/Desktop/Backend/VahanGoBase/servers/ride/views.py) | 375+ | Ride request, fare estimation, ride history endpoints |
+| [utils.py](file:///c:/Users/ankam/OneDrive/Desktop/Backend/VahanGoBase/servers/ride/utils.py) | 106 | DB-backed fare calculation + distance validation |
+| [serializers.py](file:///c:/Users/ankam/OneDrive/Desktop/Backend/VahanGoBase/servers/ride/serializers.py) | 80 | Trip list/detail serializers with fare breakdown |
 
 **Models:**
 
 | Model | Key Fields |
 |---|---|
 | `TripStatus` | `status_code` (accepted/in_progress/completed/cancelled) |
-| `Trip` | `user_id`, `driver_id`, `vehicle_id`, `status_id`, timestamps (`requested_at`, `accepted_at`, `started_at`, `completed_at`, `cancelled_at`), pickup/destination coords + addresses, `estimated_fare`, `final_fare`, `surge_multiplier`, `payment_method`, `payment_status` |
+| `Trip` | `user_id`, `driver_id`, `vehicle_id`, `status_id`, timestamps, pickup/destination coords + addresses, `estimated_fare`, `final_fare`, `surge_multiplier`, `estimated_distance_km`, `actual_distance_km`, `payment_method`, `payment_status` |
 | `FarePricing` | Per-trip fare breakdown: `base_fare`, `distance_fare`, `time_fare`, `surge_multiplier`, `total_fare` |
 | `VehicleFarePricing` | Per-vehicle-type pricing: `base_fare`, `per_km_fare`, `per_min_fare`, `min_fare`, `night_surge_multiplier` |
 | `Rating` | `trip_id`, `rater_id`, `score`, `comments` |
 
-**Fare Estimation** (`estimate_amount`): Placeholder using constants (₹30 base + ₹12/km + ₹2/min, ₹50 minimum). Designed to later integrate with Google Maps / OSRM + `VehicleFarePricing` from DB.
+**Fare Calculation** (`estimate_amount`):
+- Looks up `VehicleFarePricing` from DB by vehicle type, falls back to default constants if not found
+- Calculates: `base_fare + (per_km × distance) + (per_min × duration)`
+- Applies **night surge** automatically (11 PM – 5 AM) using `night_surge_multiplier`
+- Enforces minimum fare
+- Returns full breakdown dict (base, distance, time, surge, total, pricing source)
+
+**Distance Validation** (`validate_distance`):
+- Haversine formula calculates straight-line distance between pickup and destination
+- Rejects reported distances < 80% or > 3× the straight-line distance (prevents abuse)
+
+**API Endpoints:**
+| Endpoint | Method | Auth | Description |
+|---|---|---|---|
+| `/ride-request/` | POST | JWT | Create ride request with fare calculation |
+| `/estimate-fare/` | POST | JWT | Get fare estimate before confirming ride |
+| `/ride-history/` | GET | JWT (Rider) | Paginated list of rider's past trips |
+| `/driver-history/` | GET | JWT (Driver) | Paginated list of driver's past trips |
+| `/trip/<id>/` | GET | JWT (Rider/Driver) | Full trip detail with fare breakdown + ratings |
 
 ---
 
-### 5. `payments` — Payments & Transactions
+### 5. `payments` — Razorpay Integration & Transactions
 
-[models.py](file:///c:/Users/ankam/OneDrive/Desktop/Backend/VahanGoBase/servers/payments/models.py) — 34 lines, 2 models
+| File | Lines | Description |
+|---|---|---|
+| [models.py](file:///c:/Users/ankam/OneDrive/Desktop/Backend/VahanGoBase/servers/payments/models.py) | 63 | Payment + TransactionHistory models with Razorpay fields |
+| [views.py](file:///c:/Users/ankam/OneDrive/Desktop/Backend/VahanGoBase/servers/payments/views.py) | 290+ | Create order, verify, webhook, payment history |
+| [razorpay_utils.py](file:///c:/Users/ankam/OneDrive/Desktop/Backend/VahanGoBase/servers/payments/razorpay_utils.py) | 115 | Razorpay client wrapper + signature verification |
+| [urls.py](file:///c:/Users/ankam/OneDrive/Desktop/Backend/VahanGoBase/servers/payments/urls.py) | 9 | Payment URL routes |
+
+**Models:**
 
 | Model | Key Fields |
 |---|---|
-| `Payment` | `trip_id`, `user_id`, `amount`, `method` (cash/online), `driver_txn_id`, `status` (processing/completed) |
-| `TransactionHistory` | `trip_id`, `user_id`, `driver_id`, `amount`, `method`, `user_txn_id`, `status` |
+| `Payment` | `trip_id`, `user_id`, `amount`, `method` (cash/online), `status` (pending/processing/completed/failed/refunded), `razorpay_order_id`, `razorpay_payment_id`, `razorpay_signature` |
+| `TransactionHistory` | `trip_id`, `user_id`, `driver_id`, `amount`, `method`, `razorpay_payment_id`, `status` |
+
+**Payment Flow:**
+1. Trip completes → backend auto-creates Payment record
+   - **Cash:** Marked `completed` immediately + TransactionHistory created
+   - **Online:** Marked `pending`, Razorpay order created
+2. Frontend calls `create-order/` → gets `razorpay_order_id` + checkout params
+3. Frontend opens Razorpay checkout → user pays
+4. Frontend calls `verify/` with signature → backend verifies and marks completed
+5. Razorpay webhook (`webhook/`) also auto-confirms as backup
+
+**API Endpoints:**
+| Endpoint | Method | Auth | Description |
+|---|---|---|---|
+| `/payments/create-order/` | POST | JWT | Create Razorpay order for a completed trip |
+| `/payments/verify/` | POST | JWT | Client-side payment signature verification |
+| `/payments/webhook/` | POST | Razorpay signature | Webhook auto-confirmation |
+| `/payments/history/` | GET | JWT | Paginated payment history |
 
 ---
 
@@ -253,9 +296,11 @@ sequenceDiagram
 
 | Service | Image | Purpose |
 |---|---|---|
-| `redis` | `redis:latest` | Cache, Geo index, Streams, Channel layer |
-| `django` | Custom Dockerfile | Daphne ASGI server on port 8000 |
+| `redis` | `redis:7-alpine` | Cache, Geo index, Streams, Channel layer |
+| `django` | `python:3.11-slim` | Daphne ASGI server on port 8000 (auto-runs migrations on startup) |
 | `celery` | Same Dockerfile | Background task worker |
+
+**Environment:** `.env` file loaded into all containers with Razorpay keys, AWS keys, Redis URL.
 
 ### ASGI Config — [asgi.py](file:///c:/Users/ankam/OneDrive/Desktop/Backend/VahanGoBase/base/asgi.py)
 
@@ -270,24 +315,24 @@ sequenceDiagram
 | `auth_user` (models, views, serializers, urls, usermanager) | 5 | ~550 |
 | `driver` (models, views, utils, permissions, urls) | 5 | ~240 |
 | `rider` (models, views, serializers, urls) | 4 | ~100 |
-| `ride` (models, views, utils, urls) | 4 | ~225 |
-| `payments` (models) | 1 | ~34 |
+| `ride` (models, views, utils, serializers, urls) | 5 | ~620 |
+| `payments` (models, views, razorpay_utils, urls) | 4 | ~475 |
 | `support` (models) | 1 | ~17 |
-| Real-time: `consumers.py` | 1 | ~640 |
+| Real-time: `consumers.py` | 1 | ~750 |
 | Real-time: `redis.py` | 1 | ~249 |
 | Real-time: `ws_middleware.py` | 1 | ~52 |
 | Real-time: `routing.py` | 1 | ~9 |
-| Config: `asgi.py`, `settings.py`, `docker-compose.yml` | 3 | ~60 |
-| **Total** | **~27** | **~2,100+** |
+| Config: `asgi.py`, `settings.py`, `docker-compose.yml`, `.env` | 4 | ~80 |
+| **Total** | **~32** | **~3,100+** |
 
 ---
 
 ## MVP Progress — Ride-Hailing Backend
 
-### Overall: ~55% Complete
+### Overall: ~72% Complete
 
 ```
-██████████████░░░░░░░░░░░░  55%
+██████████████████░░░░░░░░  72%
 ```
 
 ### Per-Feature Breakdown
@@ -296,22 +341,22 @@ sequenceDiagram
 |---|---|---|---|---|
 | 1 | **User Auth (OTP + JWT)** | ✅ Done | 100% | Phone-based OTP, JWT access/refresh, role-based login |
 | 2 | **User Profile CRUD** | ✅ Done | 100% | Update name, email, avatar, address, etc. |
-| 3 | **Driver Profile & Vehicle Registration** | ✅ Done | 90% | Models + admin; missing REST CRUD for vehicle management |
+| 3 | **Driver Profile & Vehicle Registration** | ✅ Done | 100% | Full REST CRUD for vehicle management (`/vehicles/`) |
 | 4 | **Real-Time Driver Location Tracking** | ✅ Done | 100% | WebSocket + REST → Redis Geo + stream log |
 | 5 | **Nearby Driver Search** | ✅ Done | 100% | `GEOSEARCH` with configurable radius, sorted by distance |
-| 6 | **Ride Request + Driver Matching** | ✅ Done | 95% | WebSocket + REST; auto-notify nearby drivers; retry with wider radius |
-| 7 | **Trip Lifecycle (accept/start/complete/cancel)** | ✅ Done | 90% | Real-time status via WebSocket; missing timeout auto-cancel |
-| 8 | **Fare Estimation** | 🟡 Partial | 30% | Hardcoded constants; needs Google Maps/OSRM distance + `VehicleFarePricing` DB lookup |
-| 9 | **Payment Processing** | 🟡 Models Only | 15% | `Payment` + `TransactionHistory` models exist; no gateway (Razorpay/Stripe) integration |
-| 10 | **Ratings & Reviews** | 🟡 Models Only | 15% | `Rating` model exists; no API endpoints |
-| 11 | **Push Notifications (FCM/APNs)** | 🟡 Models Only | 10% | `Notification` model exists; no FCM/APNs delivery |
-| 12 | **Ride History** | 🔲 Not Started | 0% | Trip data exists in DB; no list/detail endpoints for rider/driver |
-| 13 | **Driver Earnings Dashboard** | 🟡 Models Only | 15% | `DriverEarning` model exists; no calculation logic or API |
+| 6 | **Ride Request + Driver Matching** | ✅ Done | 100% | WebSocket + REST; auto-notify nearby drivers; retry with wider radius; **Trip Timeout Auto-Cancel** implemented |
+| 7 | **Trip Lifecycle** | ✅ Done | 100% | Real-time status via WebSocket; **Auto-cancel** on timeout; **Refund** on cancel |
+| 8 | **Fare Calculation** | ✅ Done | 100% | DB-backed `VehicleFarePricing` lookup, night surge (11PM–5AM), haversine distance validation, min fare enforcement, detailed fare breakdown |
+| 9 | **Payment Gateway (Razorpay)** | ✅ Done | 100% | Razorpay order creation, client-side verification, webhook auto-confirmation, payment history. **Refund Flow** implemented. |
+| 10 | **Ratings & Reviews** | ✅ Done | 100% | `POST /rate-trip/` endpoint; auto-updates Driver/Rider average ratings |
+| 11 | **Push Notifications** | ✅ Done | 90% | In-App Notifications implemented (`/notifications/`); Auto-create on key events; FCM/APNs pending |
+| 12 | **Ride History** | ✅ Done | 100% | Rider history, driver history, trip detail with fare breakdown + ratings. Paginated with status filter |
+| 13 | **Driver Earnings Dashboard** | ✅ Done | 100% | Auto-commission calculation (80/20); `GET /earnings/` & `/earnings/summary/` endpoints |
 | 14 | **Support Tickets** | 🟡 Models Only | 15% | `SupportTicket` model exists; no CRUD endpoints |
-| 15 | **Surge Pricing** | 🔲 Not Started | 0% | `surge_multiplier` field exists on Trip; no calculation logic |
-| 16 | **ETA Calculation** | 🔲 Not Started | 0% | Needs routing API integration |
+| 15 | **Surge Pricing** | ✅ Done | 80% | Night surge auto-applied via `VehicleFarePricing`; missing demand/supply-based dynamic surge |
+| 16 | **ETA Calculation** | 🔲 Not Started | 0% | Frontend sends duration; backend validates. Needs routing API for server-side ETA |
 | 17 | **Admin Dashboard APIs** | 🔲 Not Started | 0% | Django admin registered; no custom admin APIs |
-| 18 | **Deployment (Production)** | 🟡 Partial | 40% | Docker Compose + Daphne works; needs PostgreSQL, env configs, HTTPS, CI/CD |
+| 18 | **Deployment (Production)** | 🟡 Partial | 50% | Docker Compose with `.env`, auto-migrations, Redis healthcheck; needs PostgreSQL, HTTPS, CI/CD |
 
 ---
 
@@ -319,27 +364,19 @@ sequenceDiagram
 
 ```mermaid
 pie title MVP Completion by Category
-    "Done (Auth, Location, Matching, Trips)" : 55
-    "Partial (Fares, Payments, Ratings)" : 20
-    "Not Started (History, Surge, ETA, Admin)" : 25
+    "Done (Auth, Location, Matching, Trips, Fares, Payments, History)" : 72
+    "Partial (Ratings, Notifications, Earnings)" : 13
+    "Not Started (ETA, Admin, Production)" : 15
 ```
 
 ### Remaining Work — Priority Order
 
 | Priority | Feature | Effort | What Needs To Be Done |
 |---|---|---|---|
-| 🔴 P0 | **Fare Estimation (real)** | ~1 day | Integrate Google Maps Distance Matrix API for distance/duration; use `VehicleFarePricing` from DB instead of hardcoded constants |
-| 🔴 P0 | **Payment Gateway** | ~2-3 days | Integrate Razorpay/Stripe; create order on trip complete; webhook for payment confirmation; update `Payment` + `TransactionHistory` |
-| 🔴 P0 | **Ride History API** | ~0.5 day | GET endpoints for rider's past trips + driver's past trips with pagination |
-| 🟠 P1 | **Ratings API** | ~0.5 day | POST rating after trip completion; GET average rating; update Driver/Rider `rating` fields |
-| 🟠 P1 | **Push Notifications** | ~1 day | Firebase Admin SDK; send push on ride request, trip accepted, trip completed; Celery task for async delivery |
-| 🟠 P1 | **Trip Timeout Auto-Cancel** | ~0.5 day | Celery delayed task: if no driver accepts within X minutes, auto-cancel trip and notify rider |
-| 🟠 P1 | **Driver Earnings** | ~0.5 day | Calculate commission on trip complete; populate `DriverEarning`; GET endpoint for earnings summary |
-| 🟠 P1 | **Vehicle CRUD API** | ~0.5 day | REST endpoints for drivers to add/update/remove vehicles |
-| 🟡 P2 | **Surge Pricing** | ~1 day | Calculate demand/supply ratio per area; apply multiplier to fare |
+| 🟡 P2 | **Dynamic Surge Pricing** | ~1 day | Calculate demand/supply ratio per area; apply multiplier to fare |
 | 🟡 P2 | **ETA Calculation** | ~0.5 day | Google Maps Directions API for pickup ETA + trip ETA |
 | 🟡 P2 | **Support Ticket CRUD** | ~0.5 day | Create/list/update ticket endpoints |
 | 🟡 P2 | **Admin Dashboard APIs** | ~2 days | User management, trip monitoring, revenue reports, driver approval |
 | 🟢 P3 | **Production Deployment** | ~1-2 days | PostgreSQL, environment configs, HTTPS/nginx, CI/CD pipeline |
 
-> **Estimated remaining effort for full MVP: ~12-15 days**
+> **Estimated remaining effort for full MVP: ~8-10 days**

@@ -187,6 +187,9 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             destination_lng = data.get('destination_lng')
             pickup_address = data.get('pickup_address', '')
             destination_address = data.get('destination_address', '')
+            distance_km = data.get('distance_km')
+            duration_min = data.get('duration_min')
+            vehicle_type = data.get('vehicle_type')
 
             # Validate required fields
             if not all([pickup_lat, pickup_lng, destination_lat, destination_lng]):
@@ -204,6 +207,9 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                 destination_lng=destination_lng,
                 pickup_address=pickup_address,
                 destination_address=destination_address,
+                distance_km=distance_km,
+                duration_min=duration_min,
+                vehicle_type=vehicle_type,
             )
 
             if not trip:
@@ -364,13 +370,23 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _create_trip(self, pickup_lat, pickup_lng, destination_lat, destination_lng,
-                     pickup_address, destination_address):
-        from servers.ride.models import Trip
+                     pickup_address, destination_address,
+                     distance_km=None, duration_min=None, vehicle_type=None):
+        from decimal import Decimal
+        from servers.ride.models import Trip, FarePricing
         from servers.ride.utils import estimate_amount
         from django.db import transaction
 
         try:
-            estimated_fare = estimate_amount(0, 0)
+            # Parse distance and duration
+            try:
+                dist = float(distance_km) if distance_km is not None else 0
+                dur = float(duration_min) if duration_min is not None else 0
+            except (ValueError, TypeError):
+                dist, dur = 0, 0
+
+            fare = estimate_amount(dist, dur, vehicle_type=vehicle_type)
+
             with transaction.atomic():
                 trip = Trip.objects.create(
                     user_id=self.user,
@@ -380,8 +396,25 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                     destination_long=destination_lng,
                     pickup_address=pickup_address,
                     destination_address=destination_address,
-                    estimated_fare=estimated_fare,
+                    estimated_fare=fare['total_fare'],
+                    estimated_distance_km=Decimal(str(dist)) if dist else None,
+                    surge_multiplier=fare['surge_multiplier'],
                 )
+
+                FarePricing.objects.create(
+                    trip_id=trip,
+                    base_fare=fare['base_fare'],
+                    distance_fare=fare['distance_fare'],
+                    time_fare=fare['time_fare'],
+                    surge_multiplier=fare['surge_multiplier'],
+                    total_fare=fare['total_fare'],
+                )
+
+            # Schedule auto-cancel task
+            from servers.ride.tasks import auto_cancel_trip
+            from django.conf import settings
+            auto_cancel_trip.apply_async((trip.id,), countdown=settings.TRIP_ACCEPT_TIMEOUT_SECONDS)
+
             return trip
         except Exception as e:
             logger.error(f"Failed to create trip: {str(e)}")
@@ -613,6 +646,14 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
             trip.accepted_at = timezone.now()
             trip.save()
 
+            # Create notification for rider
+            from servers.rider.models import Notification
+            Notification.objects.create(
+                user_id=trip.user_id,
+                title='Ride Accepted',
+                message=f'Driver {driver.user_id.full_name} has accepted your ride.',
+            )
+
             return {
                 'success': True,
                 'message': 'Trip accepted',
@@ -645,19 +686,150 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 trip.started_at = timezone.now()
             elif status_code == 'completed':
                 trip.completed_at = timezone.now()
+                # Create payment on trip completion
+                self._create_payment_on_complete(trip)
+                # Create driver earning
+                self._create_driver_earning(trip)
+                
+                from servers.rider.models import Notification
+                Notification.objects.create(
+                    user_id=trip.user_id,
+                    title='Ride Completed',
+                    message=f'Your ride has been completed. Final fare: ₹{trip.final_fare or trip.estimated_fare}',
+                )
             elif status_code == 'cancelled':
                 trip.cancelled_at = timezone.now()
+                self._process_refund_on_cancel(trip)
+                
+                from servers.rider.models import Notification
+                Notification.objects.create(
+                    user_id=trip.user_id,
+                    title='Ride Cancelled',
+                    message=f'Your ride has been cancelled.',
+                )
 
             trip.save()
 
-            return {
+            result = {
                 'success': True,
                 'message': f'Trip {status_code}',
                 'driver_id': trip.driver_id_id if trip.driver_id else None,
                 'rider_id': trip.user_id_id,
             }
+
+            # Include payment info for completed trips
+            if status_code == 'completed':
+                payment = trip.payments.first()
+                if payment:
+                    result['payment'] = {
+                        'payment_id': payment.id,
+                        'amount': str(payment.amount),
+                        'method': payment.method,
+                        'status': payment.status,
+                        'razorpay_order_id': payment.razorpay_order_id,
+                    }
+
+            return result
         except Trip.DoesNotExist:
             return {'success': False, 'error': 'Trip not found'}
         except Exception as e:
             logger.error(f"Error updating trip status: {str(e)}")
             return {'success': False, 'error': str(e)}
+
+    def _create_payment_on_complete(self, trip):
+        """Create a Payment record when trip is completed."""
+        from servers.payments.models import Payment, TransactionHistory
+
+        # Skip if payment already exists
+        if trip.payments.exists():
+            return
+
+        amount = trip.final_fare or trip.estimated_fare
+        if not amount:
+            logger.warning(f"No fare amount for trip {trip.id}, skipping payment creation")
+            return
+
+        payment_method = trip.payment_method or 'cash'
+
+        if payment_method == 'cash':
+            # Cash payment — mark completed immediately
+            Payment.objects.create(
+                trip_id=trip,
+                user_id=trip.user_id,
+                amount=amount,
+                method='cash',
+                status='completed',
+            )
+            trip.payment_status = 'completed'
+
+            # Create transaction history for cash
+            if trip.driver_id:
+                TransactionHistory.objects.create(
+                    trip_id=trip,
+                    user_id=trip.user_id,
+                    driver_id=trip.driver_id,
+                    amount=amount,
+                    method='cash',
+                    user_name=trip.user_id.full_name or trip.user_id.phone_number,
+                    status='completed',
+                )
+        else:
+            # Online payment — create pending payment with Razorpay order
+            from servers.payments.razorpay_utils import create_razorpay_order
+
+            order = create_razorpay_order(amount=amount, trip_id=trip.id)
+            Payment.objects.create(
+                trip_id=trip,
+                user_id=trip.user_id,
+                amount=amount,
+                method='online',
+                status='pending',
+                razorpay_order_id=order['id'] if order else None,
+            )
+            trip.payment_status = 'pending'
+
+    def _create_driver_earning(self, trip):
+        """Calculate and create DriverEarning record."""
+        from servers.driver.models import DriverEarning
+        from django.conf import settings
+        from decimal import Decimal
+
+        if not trip.driver_id:
+            return
+
+        amount = trip.final_fare or trip.estimated_fare or Decimal('0.00')
+        commission_rate = getattr(settings, 'PLATFORM_COMMISSION_PERCENT', 20)
+        
+        commission = (amount * Decimal(commission_rate)) / Decimal(100)
+        net_amount = amount - commission
+
+        DriverEarning.objects.create(
+            driver_id=trip.driver_id,
+            trip_id=trip,
+            amount=amount,
+            commission=commission,
+            net_amount=net_amount,
+        )
+
+    def _process_refund_on_cancel(self, trip):
+        """Process refund if payment was completed online."""
+        from servers.payments.models import Payment
+        from servers.payments.razorpay_utils import create_refund
+        from servers.rider.models import Notification
+
+        payment = Payment.objects.filter(trip_id=trip, method='online', status='completed').first()
+        if payment and payment.razorpay_payment_id:
+            refund = create_refund(payment.razorpay_payment_id)
+            if refund:
+                payment.status = 'refunded'
+                payment.save()
+                
+                trip.payment_status = 'refunded'
+                trip.save(update_fields=['payment_status'])
+                
+                Notification.objects.create(
+                    user_id=trip.user_id,
+                    title='Refund Processed',
+                    message=f'Your refund of ₹{payment.amount} has been initiated due to cancellation.',
+                )
+
